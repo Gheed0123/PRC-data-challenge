@@ -28,53 +28,11 @@ def test_XGB(train, test):
     return y_pred, model
 
 
-def select_testset(df):
-    # check 1 in 10
-
-    submit = df[df.tow.isna()]
-    dft = df[~df.tow.isna()]
-    tow = dft.tow
-    dft = dft.drop('tow', axis=1)
-    submit = submit.drop('tow', axis=1)
-    df = df.drop('tow', axis=1)
-
-    othercols = list(dft.select_dtypes(include=[int, float, np.float64, np.int64, bool]).columns)
-
-    for c in othercols:
-        if (dft[c].isna().any()):
-            print('found nan in col: ', c)
-            dft[c] = dft[c].fillna(0)
-        if (submit[c].isna().any()):
-            print('found nan in submitset col: ', c)
-            submit[c] = submit[c].fillna(0)
-        df[c] = df[c].fillna(0)
-
-    # dfr = [dft, dft]
-    # towr = [tow, tow]
-    # submitr = [submit, submit]
-
-    return [dft], [tow], [submit]
-
-
-def predict(model, submit, tow_max):
-    if (type(model) == list):
-        output = [(m.predict(submit[i].drop('flight_id', axis=1))*tow_max) for i, m in enumerate(model) if (not submit[i].empty)]
-        ds = []
-        i = 0
-        for s in submit:
-            if (s.empty):
-                continue
-            d = pd.DataFrame(s['flight_id'])
-            d['tow'] = output[i]
-            ds += [d]
-            i += 1
-        ds = pd.concat(ds)
-        output = ds
-    else:
-
-        output = model.predict(submit)*tow_max
-        # tbc
-        pass
+def predict(model, submit):
+    output = model.predict(submit.drop('flight_id', axis=1))
+    d = pd.DataFrame(submit['flight_id'])
+    d['tow'] = output
+    output = d
     return output
 
 
@@ -86,27 +44,19 @@ def df_model_merge(df, df_model, tow_col):
     return df
 
 
-def make_model(dff, settings):
+def make_model(dff):
     a = time()
-    print('making model with settings: ', settings)
-    tow_max = settings[0]
-    no_flightdata = settings[1]
-    if (not no_flightdata):
-        pass
-        #dff = dff[dff.ETOPS > .1].reset_index(drop=True)
 
-    xtrain, ytrain, submit = select_testset(dff)
-    output_models = [test_XGB([xtrain[i].drop('flight_id', axis=1), ytrain[i]], [xtrain[i].drop('flight_id', axis=1), ytrain[i]])
-                     for i, x in enumerate(xtrain) if (not x.empty)]
+    xtrain = dff[~dff.tow.isna()].drop('tow', axis=1).reset_index(drop=True)
+    ytrain = dff[~dff.tow.isna()].tow.reset_index(drop=True)
+    train = [xtrain.drop('flight_id', axis=1), ytrain]
+    output, model = test_XGB(train, train)
 
-    outputs = [o[0] for o in output_models]
-    model = [o[1] for o in output_models]
-
-    idx = np.concatenate([x.flight_id.values for x in xtrain])
-    output = pd.DataFrame([idx, np.concatenate(outputs)*tow_max]).T
+    idx = xtrain.flight_id.values
+    output = pd.DataFrame([idx, output]).T
     output.columns = ['flight_id', 'tow']
 
-    prediction = predict(model, submit, tow_max)
+    prediction = predict(model, dff[dff.tow.isna()].drop('tow', axis=1).reset_index(drop=True))
     print(time()-a)
     return output, prediction
 # %%
@@ -116,27 +66,16 @@ def model_TOW(df, tow_nomodel=None, mean_TOW=None):
     # df=df[:20000]
     dff = df.copy(deep=True)
 
-    folder = pathlib.Path.cwd().parents[2] / "Data/ATOW"
-    cset = pd.read_csv(folder / r"challenge_set.csv")
-
-    tow_max = 1
     dff = adjust_vars(dff)
 
     # complete model
-
-    no_flightdata = False
-
-    settings = [tow_max, no_flightdata]
-    output_test_XGB, pred_test_XGB = make_model(dff, settings)
+    output_test_XGB, pred_test_XGB = make_model(dff)
 
     # a totally different model for flights with a lot of missing ads-b data
-    no_flightdata = True
-    settings = [tow_max, no_flightdata]
 
     lst = df[list(df.columns[(~df.isna().any())])+['tow', 'previous', 'next']]
     dff_noadsb = dff.copy()[dff.columns[dff.columns.isin(lst)]]
-
-    output_XGB_noadsb, pred_XGB_noadsb = make_model(dff_noadsb, settings)
+    output_XGB_noadsb, pred_XGB_noadsb = make_model(dff_noadsb)
 
     pred_XGB_noadsb = pred_XGB_noadsb[pred_XGB_noadsb.flight_id.isin(df.flight_id[~(df.good == 1)])]
     output_XGB_noadsb = output_XGB_noadsb[output_XGB_noadsb.flight_id.isin(df.flight_id[~(df.good == 1)])]
